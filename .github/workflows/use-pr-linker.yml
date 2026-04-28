@@ -4,6 +4,11 @@ on:
   pull_request:
     types: [opened, edited, synchronize, closed]
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
 jobs:
   call-linker:
     uses: Test-unito/demo-repository/.github/workflows/link-pr-to-issue.yml@main
