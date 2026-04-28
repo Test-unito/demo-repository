@@ -1,8 +1,10 @@
 name: PR → Issue Linker (smart)
 
 on:
-  pull_request:
-    types: [opened, synchronize, closed]
+  workflow_call:
+    secrets:
+      CROSS_REPO_TOKEN:
+        required: true
 
 permissions:
   contents: read
@@ -146,3 +148,14 @@ jobs:
           if [ $FAILED -gt 0 ]; then
             exit 1
           fi
+
+      - name: Handle workflow failure
+        if: failure()
+        run: |
+          echo "${{ env.LOG_PREFIX }} ❌ Workflow failed"
+          echo "${{ env.LOG_PREFIX }} PR: ${{ github.event.pull_request.html_url }}"
+
+      - name: Success summary
+        if: success()
+        run: |
+          echo "${{ env.LOG_PREFIX }} ✅ Workflow completed successfully"
