@@ -1,0 +1,93 @@
+name: PR → Issue Linker (smart)
+
+on:
+  workflow_call:
+    secrets:
+      CROSS_REPO_TOKEN:
+        required: true
+
+jobs:
+  link:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract issue references
+        id: extract
+        run: |
+          BODY="${{ github.event.pull_request.body }}"
+
+          ISSUES=$(echo "$BODY" | grep -Eo '([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)?#[0-9]+' | sort -u)
+
+          echo "issues=$ISSUES" >> $GITHUB_OUTPUT
+
+      - name: Upsert / Delete comments
+        if: steps.extract.outputs.issues != ''
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+        run: |
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          SOURCE_REPO="${{ github.repository }}"
+          ACTION="${{ github.event.action }}"
+          MERGED="${{ github.event.pull_request.merged }}"
+
+          MARKER="<!-- pr-linker:${PR_URL} -->"
+
+          for ISSUE in ${{ steps.extract.outputs.issues }}
+          do
+            if [[ "$ISSUE" == *"/"* ]]; then
+              REPO=$(echo $ISSUE | cut -d'#' -f1)
+              NUMBER=$(echo $ISSUE | cut -d'#' -f2)
+            else
+              REPO="$SOURCE_REPO"
+              NUMBER=$(echo $ISSUE | cut -d'#' -f2)
+            fi
+
+            echo "Processing $REPO issue #$NUMBER"
+
+            COMMENTS=$(curl -s \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              https://api.github.com/repos/$REPO/issues/$NUMBER/comments)
+
+            COMMENT_ID=$(echo "$COMMENTS" | jq -r \
+              --arg marker "$MARKER" \
+              '.[] | select(.body | contains($marker)) | .id' | head -n 1)
+
+            BODY_TEXT="🔗 Linked PR:
+Title: $PR_TITLE
+URL: $PR_URL
+Source: $SOURCE_REPO
+
+$MARKER"
+
+            # 🧹 DELETE if PR closed and NOT merged
+            if [[ "$ACTION" == "closed" && "$MERGED" == "false" ]]; then
+              if [ -n "$COMMENT_ID" ]; then
+                echo "Deleting comment $COMMENT_ID"
+                curl -s -X DELETE \
+                  -H "Authorization: Bearer $GH_TOKEN" \
+                  https://api.github.com/repos/$REPO/issues/comments/$COMMENT_ID
+              else
+                echo "No comment found to delete"
+              fi
+              continue
+            fi
+
+            # 🔁 UPDATE if exists
+            if [ -n "$COMMENT_ID" ]; then
+              echo "Updating existing comment $COMMENT_ID"
+              curl -s -X PATCH \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                https://api.github.com/repos/$REPO/issues/comments/$COMMENT_ID \
+                -d "$(jq -n --arg body "$BODY_TEXT" '{body: $body}')"
+
+            else
+              echo "Creating new comment"
+              curl -s -X POST \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                https://api.github.com/repos/$REPO/issues/$NUMBER/comments \
+                -d "$(jq -n --arg body "$BODY_TEXT" '{body: $body}')"
+            fi
+          done
