@@ -6,6 +6,6 @@ on:
 
 jobs:
   call-linker:
-    uses: inji/.github/.github/workflows/pr-linker.yml@main
+    uses: Test-unito/.github/.github/workflows/link-pr-to-issue.yml@main
     secrets:
       CROSS_REPO_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
