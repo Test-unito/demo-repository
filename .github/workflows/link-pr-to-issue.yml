@@ -100,16 +100,8 @@ jobs:
               --arg marker "$MARKER" \
               '.[] | select(.body | contains($marker)) | .id' 2>/dev/null | head -n 1)
             
-            BODY_TEXT=$(cat <<EOF
-            🔗 Linked PR
-            - Title: $PR_TITLE
-            - URL: $PR_URL
-            - Source: $SOURCE_REPO
-            
-            $MARKER
-            EOF
-            )
-            
+            BODY_TEXT="🔗 Linked PR%0A%0A- Title: $PR_TITLE%0A- URL: $PR_URL%0A- Source: $SOURCE_REPO%0A%0A$MARKER"
+
             if [[ "$PR_ACTION" == "closed" && "$PR_MERGED" == "false" ]]; then
               if [ -n "$COMMENT_ID" ]; then
                 DELETE_RESPONSE=$(curl -s -w "\n%{http_code}" -X DELETE \
