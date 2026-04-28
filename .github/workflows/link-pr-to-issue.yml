@@ -24,7 +24,7 @@ jobs:
         id: validate
         run: |
           echo "${{ env.LOG_PREFIX }} Starting validation..."
-          BODY="${{ github.event.pull_request.body }}"
+          BODY="${{ github.event.pull_request.title }} ${{ github.event.pull_request.body }}"
           if [ -z "$BODY" ] || [ "$BODY" == "null" ]; then
             echo "${{ env.LOG_PREFIX }} ℹ️ PR body is empty"
             echo "has_issues=false" >> $GITHUB_OUTPUT
@@ -100,7 +100,15 @@ jobs:
               --arg marker "$MARKER" \
               '.[] | select(.body | contains($marker)) | .id' 2>/dev/null | head -n 1)
             
-            BODY_TEXT="🔗 Linked PR\n\n- Title: $PR_TITLE\n- URL: $PR_URL\n- Source: $SOURCE_REPO\n\n$MARKER"
+            BODY_TEXT=$(cat <<EOF
+            🔗 Linked PR
+            - Title: $PR_TITLE
+            - URL: $PR_URL
+            - Source: $SOURCE_REPO
+            
+            $MARKER
+            EOF
+            )
             
             if [[ "$PR_ACTION" == "closed" && "$PR_MERGED" == "false" ]]; then
               if [ -n "$COMMENT_ID" ]; then
