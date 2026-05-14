@@ -59,7 +59,7 @@ jobs:
           PR_ACTION: ${{ github.event.action }}
           PR_MERGED: ${{ github.event.pull_request.merged }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           ISSUES="${{ steps.extract.outputs.issues }}"
           MARKER="<!-- pr-linker:${PR_URL} -->"
           PROCESSED=0
