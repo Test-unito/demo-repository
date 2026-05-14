@@ -22,64 +22,81 @@ jobs:
     steps:
       - name: Validate inputs
         id: validate
+        shell: bash
         run: |
-          echo "${{ env.LOG_PREFIX }} Starting validation..."
+          echo "${LOG_PREFIX} Starting validation..."
+
           BODY="${{ github.event.pull_request.title }} ${{ github.event.pull_request.body }}"
-          
-          if [ -z "$BODY" ] || [ "$BODY" == "null" ]; then
-            echo "${{ env.LOG_PREFIX }} ℹ️ No PR content found"
-            echo "has_issues=false" >> $GITHUB_OUTPUT
+
+          if [ -z "$BODY" ] || [ "$BODY" = "null" ]; then
+            echo "${LOG_PREFIX} No PR content found"
+            echo "has_issues=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "has_issues=true" >> $GITHUB_OUTPUT
+          echo "has_issues=true" >> "$GITHUB_OUTPUT"
 
       - name: Extract issue references
         id: extract
         if: steps.validate.outputs.has_issues == 'true'
+        shell: bash
         run: |
-          echo "${{ env.LOG_PREFIX }} Extracting issue references..."
+          echo "${LOG_PREFIX} Extracting issue references..."
 
           BODY="${{ github.event.pull_request.title }} ${{ github.event.pull_request.body }}"
 
-          ISSUES=$(echo "$BODY" | grep -Eo '([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)?#[0-9]+' | sort -u)
+          ISSUES=$(echo "$BODY" | grep -Eo '([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)?#[0-9]+' | sort -u || true)
 
           if [ -z "$ISSUES" ]; then
-            echo "${{ env.LOG_PREFIX }} No issues found"
-            echo "count=0" >> $GITHUB_OUTPUT
+            echo "${LOG_PREFIX} No issues found"
+            echo "count=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          ISSUE_COUNT=$(echo "$ISSUES" | wc -l)
-          echo "${{ env.LOG_PREFIX }} Found $ISSUE_COUNT issue(s)"
+          ISSUE_COUNT=$(echo "$ISSUES" | wc -l | xargs)
 
-          echo "count=$ISSUE_COUNT" >> $GITHUB_OUTPUT
-          echo "issues<<EOF" >> $GITHUB_OUTPUT
-          echo "$ISSUES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          echo "${LOG_PREFIX} Found $ISSUE_COUNT issue(s)"
+
+          echo "count=$ISSUE_COUNT" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "issues<<EOF"
+            echo "$ISSUES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Process issue links
         if: steps.extract.outputs.count > 0
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
           SOURCE_REPO: ${{ github.repository }}
           PR_ACTION: ${{ github.event.action }}
           PR_MERGED: ${{ github.event.pull_request.merged }}
+          ISSUES: ${{ steps.extract.outputs.issues }}
         run: |
-          set -uo pipefail
+          # IMPORTANT:
+          # Do NOT use set -e or pipefail here.
+          # We handle failures manually.
+          set +e
+          set +o pipefail
 
-          ISSUES="${{ steps.extract.outputs.issues }}"
           MARKER="<!-- pr-linker:${PR_URL} -->"
 
           PROCESSED=0
           FAILED=0
 
-          echo "${{ env.LOG_PREFIX }} Processing issues..."
+          echo "${LOG_PREFIX} Processing issues..."
+          echo "${LOG_PREFIX} PR URL: ${PR_URL}"
+          echo "${LOG_PREFIX} Source Repo: ${SOURCE_REPO}"
+          echo "${LOG_PREFIX} Action: ${PR_ACTION}"
 
           while IFS= read -r ISSUE; do
+
             [ -z "$ISSUE" ] && continue
+
+            echo "${LOG_PREFIX} Raw issue reference: $ISSUE"
 
             if [[ "$ISSUE" == *"/"* ]]; then
               REPO=$(echo "$ISSUE" | cut -d'#' -f1)
@@ -90,120 +107,146 @@ jobs:
             fi
 
             if ! [[ "$NUMBER" =~ ^[0-9]+$ ]]; then
-              echo "${{ env.LOG_PREFIX }} Invalid issue number: $NUMBER"
-              ((FAILED++))
+              echo "${LOG_PREFIX} Invalid issue number: $NUMBER"
+              FAILED=$((FAILED + 1))
               continue
             fi
 
-            echo "${{ env.LOG_PREFIX }} → Processing $REPO#$NUMBER"
+            echo "${LOG_PREFIX} Processing issue: ${REPO}#${NUMBER}"
 
-            COMMENTS_RESPONSE=$(curl -s -w "\n%{http_code}" \
-              -H "Authorization: Bearer $GH_TOKEN" \
+            COMMENTS_RESPONSE=$(curl --fail-with-body -s -w "\n%{http_code}" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REPO/issues/$NUMBER/comments")
+              "https://api.github.com/repos/${REPO}/issues/${NUMBER}/comments")
 
             HTTP_CODE=$(echo "$COMMENTS_RESPONSE" | tail -n1)
             COMMENTS_BODY=$(echo "$COMMENTS_RESPONSE" | head -n-1)
 
+            echo "${LOG_PREFIX} Fetch comments HTTP code: ${HTTP_CODE}"
+
             if [ "$HTTP_CODE" != "200" ]; then
-              echo "${{ env.LOG_PREFIX }} Failed to fetch comments (HTTP $HTTP_CODE)"
+              echo "${LOG_PREFIX} Failed to fetch comments"
               echo "$COMMENTS_BODY"
-              ((FAILED++))
+
+              FAILED=$((FAILED + 1))
               continue
             fi
 
             COMMENT_ID=$(echo "$COMMENTS_BODY" | jq -r \
               --arg marker "$MARKER" \
-              '.[] | select(.body | contains($marker)) | .id' 2>/dev/null | head -n 1)
+              '.[] | select(.body | contains($marker)) | .id' \
+              2>/dev/null | head -n 1 || true)
 
-            # ✅ Proper multiline formatting (FIXED)
+            echo "${LOG_PREFIX} Existing comment ID: ${COMMENT_ID}"
+
             BODY_TEXT=$(cat <<EOF
-          🔗 Linked PR
+🔗 Linked PR
 
-          - Title: $PR_TITLE
-          - URL: $PR_URL
-          - Source: $SOURCE_REPO
+- PR: ${PR_URL}
+- Source: ${SOURCE_REPO}
 
-          $MARKER
-          EOF
-          )
+${MARKER}
+EOF
+)
 
-            # 🧹 DELETE if PR closed and NOT merged
-            if [[ "$PR_ACTION" == "closed" && "$PR_MERGED" == "false" ]]; then
-              if [ -n "$COMMENT_ID" ]; then
-                echo "${{ env.LOG_PREFIX }} Deleting comment $COMMENT_ID"
+            # DELETE COMMENT IF PR CLOSED WITHOUT MERGE
+            if [[ "${PR_ACTION}" == "closed" && "${PR_MERGED}" == "false" ]]; then
 
-                DELETE_RESPONSE=$(curl -s -w "\n%{http_code}" -X DELETE \
-                  -H "Authorization: Bearer $GH_TOKEN" \
-                  "https://api.github.com/repos/$REPO/issues/comments/$COMMENT_ID")
+              if [ -n "$COMMENT_ID" ] && [ "$COMMENT_ID" != "null" ]; then
+
+                echo "${LOG_PREFIX} Deleting comment ${COMMENT_ID}"
+
+                DELETE_RESPONSE=$(curl --fail-with-body -s -w "\n%{http_code}" -X DELETE \
+                  -H "Authorization: Bearer ${GH_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/${REPO}/issues/comments/${COMMENT_ID}")
 
                 DELETE_CODE=$(echo "$DELETE_RESPONSE" | tail -n1)
 
+                echo "${LOG_PREFIX} Delete HTTP code: ${DELETE_CODE}"
+
                 if [[ "$DELETE_CODE" =~ ^(200|204)$ ]]; then
-                  ((PROCESSED++))
+                  PROCESSED=$((PROCESSED + 1))
                 else
-                  echo "${{ env.LOG_PREFIX }} Delete failed (HTTP $DELETE_CODE)"
+                  echo "${LOG_PREFIX} Failed to delete comment"
                   echo "$DELETE_RESPONSE"
-                  ((FAILED++))
+
+                  FAILED=$((FAILED + 1))
                 fi
               else
-                echo "${{ env.LOG_PREFIX }} No comment to delete"
-                ((PROCESSED++))
+                echo "${LOG_PREFIX} No comment found to delete"
               fi
+
               continue
             fi
 
-            # 🔁 UPDATE
-            if [ -n "$COMMENT_ID" ]; then
-              echo "${{ env.LOG_PREFIX }} Updating comment $COMMENT_ID"
+            # UPDATE EXISTING COMMENT
+            if [ -n "$COMMENT_ID" ] && [ "$COMMENT_ID" != "null" ]; then
 
-              UPDATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X PATCH \
-                -H "Authorization: Bearer $GH_TOKEN" \
+              echo "${LOG_PREFIX} Updating comment ${COMMENT_ID}"
+
+              UPDATE_RESPONSE=$(curl --fail-with-body -s -w "\n%{http_code}" -X PATCH \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
                 -H "Accept: application/vnd.github+json" \
                 -H "Content-Type: application/json" \
-                "https://api.github.com/repos/$REPO/issues/comments/$COMMENT_ID" \
+                "https://api.github.com/repos/${REPO}/issues/comments/${COMMENT_ID}" \
                 -d "$(jq -n --arg body "$BODY_TEXT" '{body: $body}')")
+
+              echo "${LOG_PREFIX} Raw update response:"
+              echo "$UPDATE_RESPONSE"
 
               UPDATE_CODE=$(echo "$UPDATE_RESPONSE" | tail -n1)
 
+              echo "${LOG_PREFIX} Update HTTP code: ${UPDATE_CODE}"
+
               if [[ "$UPDATE_CODE" =~ ^(200|201)$ ]]; then
-                ((PROCESSED++))
+                echo "${LOG_PREFIX} Comment updated successfully"
+                PROCESSED=$((PROCESSED + 1))
               else
-                echo "${{ env.LOG_PREFIX }} Update failed (HTTP $UPDATE_CODE)"
-                echo "$UPDATE_RESPONSE"
-                ((FAILED++))
+                echo "${LOG_PREFIX} Failed to update comment"
+
+                FAILED=$((FAILED + 1))
               fi
 
-            # ➕ CREATE
+            # CREATE NEW COMMENT
             else
-              echo "${{ env.LOG_PREFIX }} Creating new comment"
 
-              CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-                -H "Authorization: Bearer $GH_TOKEN" \
+              echo "${LOG_PREFIX} Creating new comment"
+
+              CREATE_RESPONSE=$(curl --fail-with-body -s -w "\n%{http_code}" -X POST \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
                 -H "Accept: application/vnd.github+json" \
                 -H "Content-Type: application/json" \
-                "https://api.github.com/repos/$REPO/issues/$NUMBER/comments" \
+                "https://api.github.com/repos/${REPO}/issues/${NUMBER}/comments" \
                 -d "$(jq -n --arg body "$BODY_TEXT" '{body: $body}')")
+
+              echo "${LOG_PREFIX} Raw create response:"
+              echo "$CREATE_RESPONSE"
 
               CREATE_CODE=$(echo "$CREATE_RESPONSE" | tail -n1)
 
+              echo "${LOG_PREFIX} Create HTTP code: ${CREATE_CODE}"
+
               if [[ "$CREATE_CODE" =~ ^(200|201)$ ]]; then
-                ((PROCESSED++))
+                echo "${LOG_PREFIX} Comment created successfully"
+                PROCESSED=$((PROCESSED + 1))
               else
-                echo "${{ env.LOG_PREFIX }} Create failed (HTTP $CREATE_CODE)"
-                echo "$CREATE_RESPONSE"
-                ((FAILED++))
+                echo "${LOG_PREFIX} Failed to create comment"
+
+                FAILED=$((FAILED + 1))
               fi
             fi
 
           done <<< "$ISSUES"
 
-          echo "${{ env.LOG_PREFIX }} Done. Processed: $PROCESSED | Failed: $FAILED"
+          echo "${LOG_PREFIX} Completed"
+          echo "${LOG_PREFIX} Processed: ${PROCESSED}"
+          echo "${LOG_PREFIX} Failed: ${FAILED}"
 
-          # ✅ DO NOT fail workflow
+          # Never fail workflow completely
           exit 0
 
       - name: Success summary
         if: success()
         run: |
-          echo "${{ env.LOG_PREFIX }} ✅ Workflow completed successfully"
+          echo "${LOG_PREFIX} Workflow completed successfully"
