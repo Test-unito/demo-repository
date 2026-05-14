@@ -68,7 +68,7 @@ jobs:
           PR_ACTION: ${{ github.event.action }}
           PR_MERGED: ${{ github.event.pull_request.merged }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           ISSUES="${{ steps.extract.outputs.issues }}"
           MARKER="<!-- pr-linker:${PR_URL} -->"
@@ -160,6 +160,7 @@ jobs:
               UPDATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X PATCH \
                 -H "Authorization: Bearer $GH_TOKEN" \
                 -H "Accept: application/vnd.github+json" \
+                -H "Content-Type: application/json" \
                 "https://api.github.com/repos/$REPO/issues/comments/$COMMENT_ID" \
                 -d "$(jq -n --arg body "$BODY_TEXT" '{body: $body}')")
 
@@ -180,6 +181,7 @@ jobs:
               CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
                 -H "Authorization: Bearer $GH_TOKEN" \
                 -H "Accept: application/vnd.github+json" \
+                -H "Content-Type: application/json" \
                 "https://api.github.com/repos/$REPO/issues/$NUMBER/comments" \
                 -d "$(jq -n --arg body "$BODY_TEXT" '{body: $body}')")
 
