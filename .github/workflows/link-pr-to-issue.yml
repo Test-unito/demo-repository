@@ -140,14 +140,10 @@ jobs:
             echo "${LOG_PREFIX} Existing comment ID: ${COMMENT_ID}"
 
             BODY_TEXT=$(cat <<EOF
-🔗 Linked PR
-
-- PR: ${PR_URL}
-- Source: ${SOURCE_REPO}
-
-${MARKER}
-EOF
-)
+            BODY_TEXT="🔗 Linked PR
+            - PR: ${PR_URL}
+            - Source: ${SOURCE_REPO}
+            ${MARKER}"
 
             # DELETE COMMENT IF PR CLOSED WITHOUT MERGE
             if [[ "${PR_ACTION}" == "closed" && "${PR_MERGED}" == "false" ]]; then
