@@ -68,7 +68,8 @@ jobs:
           PR_ACTION: ${{ github.event.action }}
           PR_MERGED: ${{ github.event.pull_request.merged }}
         run: |
-          set -uo pipefail
+          set +e
+          set +o pipefail
 
           ISSUES="${{ steps.extract.outputs.issues }}"
           MARKER="<!-- pr-linker:${PR_URL} -->"
@@ -114,12 +115,14 @@ jobs:
 
             COMMENT_ID=$(echo "$COMMENTS_BODY" | jq -r \
               --arg marker "$MARKER" \
-              '.[] | select(.body | contains($marker)) | .id' 2>/dev/null | head -n 1)
+              '.[] | select(.body | contains($marker)) | .id' 2>/dev/null | head -n 1 || true)
 
             # ✅ Proper multiline formatting (FIXED)
             BODY_TEXT="🔗 Linked PR
+
             - PR: ${PR_URL}
             - Source: ${SOURCE_REPO}
+
             ${MARKER}"
 
             # 🧹 DELETE if PR closed and NOT merged
